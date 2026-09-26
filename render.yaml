@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: vera-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /v1/healthz
+    envVars:
+      - key: DEEPINFRA_API_KEY
+        sync: false          # you paste this in the Render dashboard
+      - key: LLM_MODEL
+        value: meta-llama/Llama-3.3-70B-Instruct-Turbo
+      - key: TEAM_NAME
+        value: Keshav Soni
+      - key: TEAM_MEMBERS
+        value: Keshav Soni
+      - key: CONTACT_EMAIL
+        value: keshav.ug23@nsut.ac.in
+      - key: PYTHON_VERSION
+        value: 3.11.9
