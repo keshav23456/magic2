@@ -35,7 +35,7 @@ VALID_SCOPES = ("category", "merchant", "customer", "trigger")
 TICK_BUDGET_S = float(os.getenv("TICK_BUDGET_S", "22"))
 REPLY_BUDGET_S = float(os.getenv("REPLY_BUDGET_S", "20"))
 MAX_ACTIONS_PER_TICK = int(os.getenv("MAX_ACTIONS_PER_TICK", "20"))
-LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "30"))
+LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "4"))  # DeepInfra queues parallel calls; few at a time is faster
 
 # ---------------- state ----------------
 contexts: dict[tuple[str, str], dict] = {}      # (scope, id) -> {"version", "payload"}
@@ -164,7 +164,7 @@ def _signature(trigger_id: str, trigger: dict) -> str:
 # ---------------- background precompute ----------------
 async def _precompute_run(trigger_id: str, sig: str, category, merchant, trigger, customer) -> dict:
     async with _sem:
-        msg = await compose_async(category, merchant, trigger, customer, timeout=15.0, allow_retry=True)
+        msg = await compose_async(category, merchant, trigger, customer, timeout=30.0, allow_retry=True)
     if _signature(trigger_id, trigger) == sig:  # contexts didn't change while we were composing
         precomputed[trigger_id] = {"sig": sig, "msg": msg}
     if inflight.get(trigger_id, ("",))[0] == sig:
@@ -269,6 +269,7 @@ async def push_context(request: Request):
     # Warm the composition cache for affected triggers (only when the LLM is configured).
     if llm.enabled():
         tids = [cid] if scope == "trigger" else _triggers_touching(scope, cid)
+        tids.sort(key=lambda t: -((get("trigger", t) or {}).get("urgency") or 0))
         for tid in tids:
             _precompute(tid)
     return {"accepted": True, "ack_id": f"ack_{cid}_v{version}", "stored_at": stored_at}

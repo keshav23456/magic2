@@ -114,20 +114,25 @@ async def compose_async(category: dict, merchant: dict, trigger: dict, customer:
     system = SYSTEM_PROMPT + (CUSTOMER_ADDENDUM if customer or trigger.get("scope") == "customer" else "")
 
     result = None
+    best = None  # best imperfect draft so far (fewest problems) — used if the retry fails or times out
     feedback = None
     for attempt in range(2 if allow_retry else 1):
         raw = await llm.chat_json(system, _user_prompt(facts, playbook, feedback), timeout=timeout)
         if not raw:
             break
         cand = _clean(raw, playbook[2])
+        if not cand["body"]:
+            continue
         problems = validate(cand, facts)
         if not problems:
             result = cand
             break
         feedback = " ".join(problems)
-        # keep the draft if it's only a soft issue and we're out of retries
-        if attempt == 1 and cand["body"] and not URL_RE.search(cand["body"]):
-            result = cand
+        hard = any("URL" in p or "taboo" in p or "not in FACTS" in p for p in problems)
+        if not hard and (best is None or len(problems) < best[0]):
+            best = (len(problems), cand)
+    if result is None and best is not None:
+        result = best[1]
     if result is None:
         result = fallback_compose(category, merchant, trigger, customer)
         result["rationale"] = "[template fallback] " + result["rationale"]
