@@ -32,10 +32,10 @@ KEEPALIVE_URL = (os.getenv("KEEPALIVE_URL") or os.getenv("RENDER_EXTERNAL_URL") 
 KEEPALIVE_EVERY_S = float(os.getenv("KEEPALIVE_EVERY_S", "600"))
 VALID_SCOPES = ("category", "merchant", "customer", "trigger")
 
-TICK_BUDGET_S = float(os.getenv("TICK_BUDGET_S", "22"))
-REPLY_BUDGET_S = float(os.getenv("REPLY_BUDGET_S", "20"))
+TICK_BUDGET_S = float(os.getenv("TICK_BUDGET_S", "18"))
+REPLY_BUDGET_S = float(os.getenv("REPLY_BUDGET_S", "25"))
 MAX_ACTIONS_PER_TICK = int(os.getenv("MAX_ACTIONS_PER_TICK", "20"))
-LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "4"))  # DeepInfra queues parallel calls; few at a time is faster
+LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "8"))  # DeepInfra queues parallel calls; few at a time is faster
 
 # ---------------- state ----------------
 contexts: dict[tuple[str, str], dict] = {}      # (scope, id) -> {"version", "payload"}
@@ -44,6 +44,7 @@ sent_suppression_keys: set[str] = set()
 suppressed_merchants: dict[str, str] = {}       # merchant_id -> reason (opt-out / auto-reply exit)
 merchant_auto_reply_count: dict[str, int] = {}  # consecutive auto-replies per merchant
 precomputed: dict[str, dict] = {}               # trigger_id -> {"sig", "msg"}
+deferred_once: set[str] = set()                 # triggers we held back one tick while the LLM finished
 inflight: dict[str, tuple[str, asyncio.Task]] = {}  # trigger_id -> (sig, running precompute task)
 _bg_tasks: set[asyncio.Task] = set()
 _sem = asyncio.Semaphore(LLM_CONCURRENCY)
@@ -350,9 +351,11 @@ async def tick(request: Request):
         cached = precomputed.get(tid)
         if cached and cached["sig"] == sig:
             return cached["msg"]
+        if llm.enabled():
+            _precompute(tid)  # no-op if already running
         running = inflight.get(tid)
         if running and running[0] == sig:
-            return await asyncio.shield(running[1])  # join the background job instead of queueing a new call
+            return await asyncio.shield(running[1])  # join the background job instead of starting a second call
         return await compose_async(category, merchant, trg, customer, timeout=TICK_BUDGET_S - 2, allow_retry=False)
 
     tasks = [asyncio.create_task(build(c)) for c in chosen]
@@ -366,6 +369,12 @@ async def tick(request: Request):
             msg = t.result()
         else:
             t.cancel()
+            # Not ready: hold non-urgent triggers for the next tick (background job keeps composing),
+            # unless we already held it once or it's urgent — then send the template now.
+            if (trg.get("urgency") or 0) < 4 and tid not in deferred_once and llm.enabled():
+                deferred_once.add(tid)
+                _precompute(tid)
+                continue
             fb = fallback_compose(category, merchant, trg, customer)
             from .composer import _finalize
             msg = _finalize({**fb, "rationale": "[template fallback: time budget] " + fb["rationale"]},
@@ -490,7 +499,7 @@ async def teardown():
     for t in list(_bg_tasks):
         t.cancel()
     contexts.clear(); conversations.clear(); sent_suppression_keys.clear()
-    suppressed_merchants.clear(); merchant_auto_reply_count.clear(); precomputed.clear(); inflight.clear()
+    suppressed_merchants.clear(); merchant_auto_reply_count.clear(); precomputed.clear(); inflight.clear(); deferred_once.clear()
     _dirty["v"] = False
     try:
         os.remove(STATE_FILE)

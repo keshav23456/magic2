@@ -29,6 +29,7 @@ HARD RULES
    ("I've drafted it — reply YES and it goes live"). No multiple options, except numbered time slots for customer bookings.
 7. Match the category voice and register. Never use any taboo word. Peer/colleague tone, never hype, no ALL CAPS, no "!!!".
 8. Write in the requested language. For Hinglish: natural Roman-script code-mix, like a Delhi professional texting.
+   Vera is female: in Hindi use feminine first-person forms ("kar sakti hoon", "bhej rahi hoon", never "sakta/raha").
 9. No URLs, no hashtags, no internal jargon (never say "trigger", "signal", "payload", "context", "CTR" is ok for merchants).
 10. Concise: 2-5 short sentences, WhatsApp-readable. At most one emoji, only if it fits the category.
 11. Reading numbers correctly: rates like ctr 0.021 mean 2.1%. delta_pct -0.5 means DOWN 50%. "vs_baseline": 12
@@ -38,12 +39,9 @@ HARD RULES
 13. If the trigger is weak for this merchant (e.g. festival far away or not relevant), be honest and make it a light,
     useful heads-up rather than fake urgency.
 
-OUTPUT: a JSON object with keys:
-  "body": the WhatsApp message text,
-  "cta": one of "binary_yes_no" | "binary_confirm_cancel" | "open_ended" | "multi_choice_slot" | "none",
-  "rationale": 1-2 sentences: which fact you anchored on, why now, which engagement lever you used,
-  "template_params": 2-4 short strings that would fill a pre-approved WhatsApp template for this message
-                     (first = salutation/name, then the key fact(s)).
+OUTPUT: ONLY a JSON object, no other text:
+{"body": "<the WhatsApp message>", "cta": "binary_yes_no|binary_confirm_cancel|open_ended|multi_choice_slot|none",
+ "rationale": "<max 25 words: the fact anchored on, why now, the engagement lever>"}
 """
 
 CUSTOMER_ADDENDUM = """
@@ -103,7 +101,7 @@ def _clean(msg: dict, default_cta: str) -> dict:
         "body": body,
         "cta": cta,
         "rationale": (msg.get("rationale") or "").strip()[:500],
-        "template_params": [str(p)[:120] for p in params][:4],
+        "template_params": [str(p)[:120] for p in params][:4] if params else [],
     }
 
 
@@ -143,7 +141,7 @@ async def compose_async(category: dict, merchant: dict, trigger: dict, customer:
 def _finalize(result: dict, category, merchant, trigger, customer) -> dict:
     is_customer = bool(customer) or trigger.get("scope") == "customer"
     kind = trigger.get("kind") or "generic"
-    params = result.get("template_params") or [salutation(category, merchant)]
+    params = result.get("template_params") or _template_params(category, merchant, trigger, customer)
     return {
         "body": result["body"],
         "cta": result["cta"],
@@ -153,6 +151,19 @@ def _finalize(result: dict, category, merchant, trigger, customer) -> dict:
         "template_name": f"{'merchant' if is_customer else 'vera'}_{kind}_v1",
         "template_params": params,
     }
+
+
+def _template_params(category, merchant, trigger, customer) -> list[str]:
+    """Parameters for the pre-approved first-message template ({{1}} name, {{2}} topic, {{3}} key fact)."""
+    name = ((customer or {}).get("identity") or {}).get("name") if customer else salutation(category, merchant)
+    kind = (trigger.get("kind") or "update").replace("_", " ")
+    p = trigger.get("payload") or {}
+    key = ""
+    for k in ("festival", "metric", "molecule", "service_due", "intent_topic", "competitor_name", "match", "theme", "season"):
+        if p.get(k):
+            key = str(p[k]).replace("_", " ")
+            break
+    return [x for x in (name or "", kind, key) if x]
 
 
 # ---------------- deterministic fallback (no LLM) ----------------
@@ -197,7 +208,7 @@ def fallback_compose(category: dict, merchant: dict, trigger: dict, customer: di
             extra = f" {offer} is available for you." if offer else ""
             body = f"Hi {cname}, {mname} here. It's been a while since your last visit.{extra} Reply YES and we'll book a slot for you."
         return {"body": body, "cta": cta, "rationale": f"Customer-facing {kind}; used payload slots/offer only.",
-                "template_params": [cname, mname]}
+                "template_params": []}
 
     if item:
         src = item.get("source", "")
@@ -240,4 +251,4 @@ def fallback_compose(category: dict, merchant: dict, trigger: dict, customer: di
         anchor = f"{perf.get('views')} views and {perf.get('calls')} calls in the last 30 days" if perf.get("views") else "your listing"
         body = f"{sal}, quick update on {anchor}. Want me to draft a post around {offer or 'your top service'}?"
     return {"body": body, "cta": cta, "rationale": f"{kind}: anchored on payload/merchant numbers; single low-friction ask.",
-            "template_params": [sal]}
+            "template_params": []}

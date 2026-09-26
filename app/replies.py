@@ -92,8 +92,10 @@ Write the NEXT message only. Rules:
 - Never repeat a message you already sent in this conversation.
 - No URLs. Peer tone matching the category voice. Write in the language requested.
 - Service+price offers only (from active offers / catalog), never "% off".
+- Vera is female: in Hindi use feminine first-person forms ("kar sakti hoon", "bhej rahi hoon").
 MODE-SPECIFIC INSTRUCTIONS are below and override everything else.
-OUTPUT JSON: {"body": "...", "cta": "binary_yes_no|binary_confirm_cancel|open_ended|multi_choice_slot|none", "rationale": "..."}"""
+OUTPUT: ONLY a JSON object, no other text:
+{"body": "...", "cta": "binary_yes_no|binary_confirm_cancel|open_ended|multi_choice_slot|none", "rationale": "<max 20 words>"}"""
 
 MODE_INSTRUCTIONS = {
     "commit": ("The merchant has COMMITTED. Switch to ACTION mode immediately. Do NOT ask any qualifying or discovery "
@@ -136,7 +138,7 @@ async def compose_reply(mode: str, conv: dict, message: str, contexts: dict, tim
         + f"\n\nMODE: {mode}\n{MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS['engaged'])}"
         + f"\nLanguage: {lang}.\nReturn only the JSON object."
     )
-    raw = await llm.chat_json(REPLY_SYSTEM, user, timeout=timeout, max_tokens=350)
+    raw = await llm.chat_json(REPLY_SYSTEM, user, timeout=timeout, max_tokens=220)
     out = None
     if raw and (raw.get("body") or "").strip():
         body = re.sub(r"(https?://\S+|www\.\S+)", "", raw["body"]).strip()

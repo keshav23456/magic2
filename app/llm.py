@@ -27,7 +27,7 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def chat_json(system: str, user: str, timeout: float = 10.0, max_tokens: int = 350) -> dict | None:
+async def chat_json(system: str, user: str, timeout: float = 10.0, max_tokens: int = 260) -> dict | None:
     """Call the model and parse a JSON object from its reply. Returns None on any failure."""
     if not enabled():
         return None
@@ -37,8 +37,9 @@ async def chat_json(system: str, user: str, timeout: float = 10.0, max_tokens: i
         "temperature": 0,
         "seed": 42,
         "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
     }
+    if os.getenv("LLM_JSON_MODE", "0") == "1":  # forced-JSON decoding can be slow on some providers
+        body["response_format"] = {"type": "json_object"}
     t0 = time.time()
     try:
         r = await _get_client().post(
@@ -48,8 +49,12 @@ async def chat_json(system: str, user: str, timeout: float = 10.0, max_tokens: i
             timeout=timeout,
         )
         r.raise_for_status()
-        text = r.json()["choices"][0]["message"]["content"]
-        print(f"[llm] ok {time.time() - t0:.1f}s")
+        data = r.json()
+        text = data["choices"][0]["message"]["content"]
+        dt = time.time() - t0
+        u = data.get("usage") or {}
+        out_t = u.get("completion_tokens") or 0
+        print(f"[llm] ok {dt:.1f}s in={u.get('prompt_tokens')} out={out_t} ({out_t / dt if dt else 0:.0f} tok/s)")
         return parse_json(text)
     except Exception as e:  # network, timeout, bad JSON — caller falls back
         print(f"[llm] error after {time.time() - t0:.1f}s: {type(e).__name__}: {str(e)[:200]}")
