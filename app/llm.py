@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import time
 
 import httpx
 
@@ -26,7 +27,7 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def chat_json(system: str, user: str, timeout: float = 10.0, max_tokens: int = 500) -> dict | None:
+async def chat_json(system: str, user: str, timeout: float = 10.0, max_tokens: int = 350) -> dict | None:
     """Call the model and parse a JSON object from its reply. Returns None on any failure."""
     if not enabled():
         return None
@@ -38,6 +39,7 @@ async def chat_json(system: str, user: str, timeout: float = 10.0, max_tokens: i
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
+    t0 = time.time()
     try:
         r = await _get_client().post(
             DEEPINFRA_URL,
@@ -47,9 +49,10 @@ async def chat_json(system: str, user: str, timeout: float = 10.0, max_tokens: i
         )
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
+        print(f"[llm] ok {time.time() - t0:.1f}s")
         return parse_json(text)
     except Exception as e:  # network, timeout, bad JSON — caller falls back
-        print(f"[llm] error: {type(e).__name__}: {str(e)[:200]}")
+        print(f"[llm] error after {time.time() - t0:.1f}s: {type(e).__name__}: {str(e)[:200]}")
         return None
 
 

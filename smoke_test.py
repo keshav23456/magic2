@@ -68,13 +68,15 @@ check("stale version -> 409", s == 409 and b.get("current_version") == 5)
 s, b, _ = call("POST", "/v1/context", {"scope": "nope", "context_id": "x", "version": 1, "payload": {}})
 check("bad scope -> 400", s == 400)
 
-print("\nWaiting 20s so background precompute can warm the cache...")
-time.sleep(20)
+s, b, _ = call("GET", "/v1/debug/llm", timeout=40)
+check("DeepInfra reachable from server", b.get("ok"), str(b))
+print("\nWaiting 45s so background precompute can warm the cache...")
+time.sleep(45)
 s, b, dt = call("POST", "/v1/tick", {"now": "2026-04-26T10:30:00Z", "available_triggers": [t["id"] for t in triggers]})
 acts = b.get("actions", [])
 req = {"conversation_id", "merchant_id", "send_as", "trigger_id", "body", "cta", "suppression_key", "rationale"}
 check("tick returns actions", s == 200 and len(acts) > 0, f"{len(acts)} actions in {dt:.1f}s")
-check("tick under 15s", dt < 15, f"{dt:.1f}s")
+check("tick under 25s (judge limit 30s)", dt < 25, f"{dt:.1f}s")
 check("action schema", all(req <= set(a) and a["body"] for a in acts))
 fallbacks = sum(1 for a in acts if a["rationale"].startswith("[template fallback"))
 check("LLM used (not template fallback)", fallbacks == 0, f"{fallbacks}/{len(acts)} were template fallback")
@@ -94,6 +96,7 @@ def rep(cid, msg, turn=2, m=mid):
 
 s, b, dt = rep(conv, "Interesting, what would the post say?")
 check("engaged reply", b.get("action") == "send" and b.get("body"), f"{dt:.1f}s: {str(b.get('body'))[:100]}")
+check("engaged reply written by LLM", not str(b.get("rationale", "")).startswith("[template fallback"), str(b.get("rationale"))[:80])
 s, b, _ = rep(conv, "Ok lets do it. Whats next?", 3)
 body = (b.get("body") or "").lower()
 check("commit -> action mode", b.get("action") == "send" and not any(q in body for q in ["would you", "do you", "can you tell"]),

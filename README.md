@@ -53,4 +53,3 @@ python generate_submission.py        # writes submission.jsonl for the 30 test p
 - **Sleep after 15 minutes idle:** the bot pings its own `RENDER_EXTERNAL_URL/v1/healthz` every 10 minutes. Render sets that variable automatically, so there's nothing to configure. One always-on service fits in the 750 free hours per month.
 - **Restart wipes memory:** state is snapshotted to `/tmp/vera_state.json` every 15 seconds and restored on startup. This survives a process restart, but not an instance replacement such as a redeploy, because Render's free disk is ephemeral. So don't redeploy during the test window. External storage isn't used because the challenge forbids sending merchant data to non-LLM services.
 - **Clearing test data:** use `POST /v1/teardown`. A restart would reload the snapshot. `smoke_test.py` calls teardown automatically at the end.
-# magic2

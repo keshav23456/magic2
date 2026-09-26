@@ -146,6 +146,7 @@ async def compose_reply(mode: str, conv: dict, message: str, contexts: dict, tim
             out = None  # guardrail: never qualify after a commitment
     if out is None:
         out = fallback_reply(mode, conv, merchant, category, trigger, lang)
+        out["rationale"] = "[template fallback] " + out["rationale"]
     if mode == "commit":
         out["cta"] = "binary_confirm_cancel"
     if mode in ("abuse", "slot_pick"):

@@ -32,10 +32,10 @@ KEEPALIVE_URL = (os.getenv("KEEPALIVE_URL") or os.getenv("RENDER_EXTERNAL_URL") 
 KEEPALIVE_EVERY_S = float(os.getenv("KEEPALIVE_EVERY_S", "600"))
 VALID_SCOPES = ("category", "merchant", "customer", "trigger")
 
-TICK_BUDGET_S = float(os.getenv("TICK_BUDGET_S", "11"))
-REPLY_BUDGET_S = float(os.getenv("REPLY_BUDGET_S", "11"))
+TICK_BUDGET_S = float(os.getenv("TICK_BUDGET_S", "22"))
+REPLY_BUDGET_S = float(os.getenv("REPLY_BUDGET_S", "20"))
 MAX_ACTIONS_PER_TICK = int(os.getenv("MAX_ACTIONS_PER_TICK", "20"))
-LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "8"))
+LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "30"))
 
 # ---------------- state ----------------
 contexts: dict[tuple[str, str], dict] = {}      # (scope, id) -> {"version", "payload"}
@@ -44,6 +44,7 @@ sent_suppression_keys: set[str] = set()
 suppressed_merchants: dict[str, str] = {}       # merchant_id -> reason (opt-out / auto-reply exit)
 merchant_auto_reply_count: dict[str, int] = {}  # consecutive auto-replies per merchant
 precomputed: dict[str, dict] = {}               # trigger_id -> {"sig", "msg"}
+inflight: dict[str, tuple[str, asyncio.Task]] = {}  # trigger_id -> (sig, running precompute task)
 _bg_tasks: set[asyncio.Task] = set()
 _sem = asyncio.Semaphore(LLM_CONCURRENCY)
 _dirty = {"v": False}
@@ -161,7 +162,17 @@ def _signature(trigger_id: str, trigger: dict) -> str:
 
 
 # ---------------- background precompute ----------------
-async def _precompute(trigger_id: str) -> None:
+async def _precompute_run(trigger_id: str, sig: str, category, merchant, trigger, customer) -> dict:
+    async with _sem:
+        msg = await compose_async(category, merchant, trigger, customer, timeout=15.0, allow_retry=True)
+    if _signature(trigger_id, trigger) == sig:  # contexts didn't change while we were composing
+        precomputed[trigger_id] = {"sig": sig, "msg": msg}
+    if inflight.get(trigger_id, ("",))[0] == sig:
+        inflight.pop(trigger_id, None)
+    return msg
+
+
+def _precompute(trigger_id: str) -> None:
     trigger = get("trigger", trigger_id)
     if not trigger:
         return
@@ -171,10 +182,12 @@ async def _precompute(trigger_id: str) -> None:
     sig = _signature(trigger_id, trigger)
     if precomputed.get(trigger_id, {}).get("sig") == sig:
         return
-    async with _sem:
-        msg = await compose_async(category, merchant, trigger, customer, timeout=20.0, allow_retry=True)
-    if _signature(trigger_id, trigger) == sig:  # contexts didn't change while we were composing
-        precomputed[trigger_id] = {"sig": sig, "msg": msg}
+    if trigger_id in inflight and inflight[trigger_id][0] == sig:
+        return  # already being composed
+    task = asyncio.create_task(_precompute_run(trigger_id, sig, category, merchant, trigger, customer))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    inflight[trigger_id] = (sig, task)
 
 
 def _schedule(coro) -> None:
@@ -257,7 +270,7 @@ async def push_context(request: Request):
     if llm.enabled():
         tids = [cid] if scope == "trigger" else _triggers_touching(scope, cid)
         for tid in tids:
-            _schedule(_precompute(tid))
+            _precompute(tid)
     return {"accepted": True, "ack_id": f"ack_{cid}_v{version}", "stored_at": stored_at}
 
 
@@ -332,11 +345,14 @@ async def tick(request: Request):
     # 3. compose (cache hit or live call, bounded by the tick budget)
     async def build(c):
         tid, trg, category, merchant, customer, _ = c
+        sig = _signature(tid, trg)
         cached = precomputed.get(tid)
-        if cached and cached["sig"] == _signature(tid, trg):
+        if cached and cached["sig"] == sig:
             return cached["msg"]
-        async with _sem:
-            return await compose_async(category, merchant, trg, customer, timeout=TICK_BUDGET_S - 1, allow_retry=False)
+        running = inflight.get(tid)
+        if running and running[0] == sig:
+            return await asyncio.shield(running[1])  # join the background job instead of queueing a new call
+        return await compose_async(category, merchant, trg, customer, timeout=TICK_BUDGET_S - 2, allow_retry=False)
 
     tasks = [asyncio.create_task(build(c)) for c in chosen]
     if tasks:
@@ -460,12 +476,20 @@ async def reply(request: Request):
     return {"action": "send", "body": out["body"], "cta": out["cta"], "rationale": out["rationale"]}
 
 
+@app.get("/v1/debug/llm")
+async def debug_llm():
+    """One tiny LLM call to measure DeepInfra latency from this server."""
+    t0 = time.time()
+    out = await llm.chat_json("Reply with JSON.", 'Return {"ok": true}', timeout=25.0, max_tokens=20)
+    return {"key_set": llm.enabled(), "model": llm.MODEL, "ok": bool(out), "latency_s": round(time.time() - t0, 2)}
+
+
 @app.post("/v1/teardown")
 async def teardown():
     for t in list(_bg_tasks):
         t.cancel()
     contexts.clear(); conversations.clear(); sent_suppression_keys.clear()
-    suppressed_merchants.clear(); merchant_auto_reply_count.clear(); precomputed.clear()
+    suppressed_merchants.clear(); merchant_auto_reply_count.clear(); precomputed.clear(); inflight.clear()
     _dirty["v"] = False
     try:
         os.remove(STATE_FILE)

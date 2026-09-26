@@ -31,7 +31,11 @@ HARD RULES
 8. Write in the requested language. For Hinglish: natural Roman-script code-mix, like a Delhi professional texting.
 9. No URLs, no hashtags, no internal jargon (never say "trigger", "signal", "payload", "context", "CTR" is ok for merchants).
 10. Concise: 2-5 short sentences, WhatsApp-readable. At most one emoji, only if it fits the category.
-11. If the trigger is weak for this merchant (e.g. festival far away or not relevant), be honest and make it a light,
+11. Reading numbers correctly: rates like ctr 0.021 mean 2.1%. delta_pct -0.5 means DOWN 50%. "vs_baseline": 12
+    means the usual level is 12 (a count, NOT a percent). peer_stats are category averages, not this merchant.
+    Never combine numbers into new claims (no "X% below baseline" unless FACTS says so).
+12. The last sentence must be the single ask — a question or "Reply YES/CONFIRM ..." line.
+13. If the trigger is weak for this merchant (e.g. festival far away or not relevant), be honest and make it a light,
     useful heads-up rather than fake urgency.
 
 OUTPUT: a JSON object with keys:
@@ -80,6 +84,9 @@ def validate(msg: dict, facts: dict) -> list[str]:
     bad = unknown_numbers(body, allowed_numbers(facts))
     if bad:
         problems.append(f"these numbers are not in FACTS: {', '.join(bad[:5])} — remove or replace with numbers from FACTS.")
+    last = re.split(r"(?<=[.!?])\s+", body.strip())[-1].lower()
+    if not (last.endswith("?") or "reply" in last or "bataiye" in last or "batayein" in last):
+        problems.append("the message must END with one clear ask (a question or a 'Reply YES' line).")
     if re.search(r"\b\d{1,2}\s?% off\b", low):
         problems.append("it uses a generic '% off' offer; use service+price.")
     return problems
